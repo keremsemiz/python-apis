@@ -23,3 +23,17 @@ def get_all_todos():
 def add_todo_item(item: TodoItem):
     todos.append(item)
     return item
+
+@app.put("/todo/{item_id}/complete")
+def complete_todo_item(item_id: int):
+    for item in todos:
+        if item.id == item_id:
+            item.completed = True
+            return {"message": "Task marked as completed", "item": item}
+    raise HTTPException(status_code=404, detail="Todo item not found")
+
+@app.delete("/todo/{item_id}")
+def delete_todo_item(item_id: int):
+    global todos
+    todos = [item for item in todos if item.id != item_id]
+    return {"message": "Task deleted"}
