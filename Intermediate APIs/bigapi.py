@@ -163,6 +163,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
 async def get_weather(city: str):
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={API_KEY}&units=metric"
     async with httpx.AsyncClient() as client:
@@ -174,3 +175,70 @@ async def get_weather(city: str):
             "description": data["weather"][0]["description"]
         }
         return weather
+
+@app.post("/register", response_model=UserOut)
+async def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    hashed_password = get_password_hash(user.password)
+    db_user = User(username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=400, detail="Incorrect username or password"
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/projects/", response_model=ProjectOut)
+async def create_project(project: ProjectCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_project = Project(**project.dict(), owner_id=current_user.id)
+    db.add(db_project)
+    db.commit()
+    db.refresh(db_project)
+    await manager.broadcast(f"New project created: {db_project.name}")
+    return db_project
+
+@app.get("/projects/", response_model=List[ProjectOut])
+async def read_projects(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    projects = db.query(Project).offset(skip).limit(limit).all()
+    return projects
+
+@app.post("/tasks/", response_model=TaskOut)
+async def create_task(task: TaskCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    db_task = Task(**task.dict())
+    db.add(db_task)
+    db.commit()
+    db.refresh(db_task)
+    await manager.broadcast(f"New task created: {db_task.title}")
+    return db_task
+
+@app.get("/tasks/", response_model=List[TaskOut])
+async def read_tasks(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    tasks = db.query(Task).offset(skip).limit(limit).all()
+    return tasks
+
+@app.websocket("/ws/notifications")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.broadcast(f"Notification: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+@app.get("/weather/{city}", response_model=Weather)
+async def get_weather_info(city: str):
+    weather = await get_weather(city)
+    if not weather:
+        raise HTTPException(status_code=404, detail="City not found")
+    return weather
